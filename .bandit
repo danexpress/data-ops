@@ -1,0 +1,2 @@
+exlude_dirs: ['test']
+skips: [B'311']

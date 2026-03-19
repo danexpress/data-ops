@@ -1,0 +1,174 @@
+name: Infrastructure Deployment
+
+on:
+    pull_request:
+        branches: [main]
+    push:
+        branches: [dev, main]
+
+env:
+    AWS_REGION: us-east-1
+    TF_VERSION: 1.14.7
+    PYTHON_VERSION: 3.10.19
+
+jobs:
+    security:
+        name: Security Scan
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+
+            - name: Install dependencies
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install -r requirements.txt
+                  pip install bandit
+
+            - name: Run Bandit security scan
+              run: bandit -r . -c .bandit 
+
+    tests:
+        needs: security
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+
+            - name: Install dependencies
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install -r requirements.txt
+                  pip install pytest
+
+            - name: Run Python tests
+              run: |
+                pytest tests/ -v --cov=scripts --cov-report=xml
+
+            - name: Upload coverage report
+              uses: actions/upload-artifact@v3
+              with:
+                  name: coverage-report
+                  path: coverage.xml
+                  retention-days: 7
+
+    validate:
+        name: Validate
+        needs: tests
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set Terraform
+              uses: hashicorp/setup-terraform@v2
+              with:
+                  terraform_version: ${{ env.TF_VERSION }}
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                  aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                  aws-region: ${{ env.AWS_REGION }}
+
+            - name: Terraform init
+              working-directory: ./terraform
+              run: terraform init
+
+            - name: Terraform validate
+              working-directory: ./terraform
+              run: terraform validate
+
+    plan:
+        name: Plan
+        needs: validate
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set Terraform
+              uses: hashicorp/setup-terraform@v2
+              with:
+                  terraform_version: ${{ env.TF_VERSION }}
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                  aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                  aws-region: ${{ env.AWS_REGION }}
+
+            - name: Terraform init
+              working-directory: ./terraform
+              run: terraform init
+
+            - name: Terraform plan
+              working-directory: ./terraform
+              run: terraform plan -out=tfplan
+
+            - name: Upload terraform plan
+              uses: actions/upload-artifact@v3
+              with:
+                  name: tfplan
+                  path: ./terraform/tfplan
+                  retention-days: 1
+
+    deploy:
+        name: Deploy
+        needs: plan
+        runs-on: ubuntu-latest
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        environment: production
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set Terraform
+              uses: hashicorp/setup-terraform@v2
+              with:
+                  terraform_version: ${{ env.TF_VERSION }}
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                  aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                  aws-region: ${{ env.AWS_REGION }}
+
+            - name: Terraform init
+              working-directory: ./terraform
+              run: terraform init
+
+            - name: Download Terraform plan
+              uses: actions/download-artifact@v3
+              with:
+                  name: tfplan
+                  path: terraform
+
+            - name: Terraform apply
+              working-directory: ./terraform
+              run: terraform apply -auto-approve tfplan
+
+            - name: Save Terraform outputs
+              working-directory: ./terraform
+              run: terraform output -json > terraform_outputs.json
+
+            - name: Upload Terraform outputs
+              uses: actions/upload-artifact@v4
+              with:
+                  name: terraform_outputs
+                  path: ./terraform/terraform_outputs.json
+                  retention-days: 7
