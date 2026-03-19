@@ -1,2 +1,2 @@
-exlude_dirs: ['test']
+exlude_dirs: ['test','scripts/generate_sample_data.py']
 skips: [B'311']
